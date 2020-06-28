@@ -12,45 +12,58 @@ from copy import deepcopy
 
 
 from flask import Flask, json
-stream = False
-refresh_request = True #testing only
-threshold = 0 #testing only
 api = Flask(__name__)
-image_arr = []
-motion_event = False
-bird_detected = True
 
+class StreamProcessor:
 
-def stream_processor():
-    cap = cv.VideoCapture("http://192.168.1.245:8000/stream.mjpg")
-    global bird_detected
+    def __init__(self):
+        self.image_arr = []
+        self.motion_event = False
+        self.bird_detected = True
+
+    def get_image_arr(self):
+        return self.image_arr
+
+    def reset_img_arr(self):
+        self.image_arr = []
+
+    def set_motion_event(self,val):
+        self.motion_event = val
+
+    def get_motion_event(self):
+        return self.motion_event
     
-    stream = True
-    try:
-        ret,frame = cap.read()
-        while stream:
+    def get_bird_detected(self):
+        return self.bird_detected
 
-            bird_detected = True #Testing only, should use ML model
-            ret, frame = cap.read()
-            print(ret)
+    def set_bird_detected(self,val):
+        self.bird_detected = val
 
-            if not ret:
-                break
-            cv.imshow('frame',frame)
+    def start_stream_processor(self):
+        cap = cv.VideoCapture("http://192.168.1.245:8000/stream.mjpg")
+        try:
+            ret,frame = cap.read()
+            while True:
 
-            if motion_event:
-                image_arr.append(frame)
+                self.bird_detected = True #Testing only, should use ML model
+                ret, frame = cap.read()
+                
+                if not ret:
+                    break
+                cv.imshow('frame',frame)
 
-            if cv.waitKey(1) & 0xFF == ord('q'):
-                break
+                if self.motion_event:
+                    self.image_arr.append(frame)
 
+                if cv.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-    except Exception as e:
-        print("caught exception, stream stopped unexpectedly")
-        print(e)
-    finally:    
-        cap.release()
-        cv.destroyAllWindows()
+        except Exception as e:
+            print("caught exception, stream stopped unexpectedly")
+            print(e)
+        finally:    
+            cap.release()
+            cv.destroyAllWindows()
 
 
 def write_video(image_array):
@@ -60,40 +73,38 @@ def write_video(image_array):
     out = cv.VideoWriter(vid_name, cv.VideoWriter_fourcc(*'DIVX'),30, (height,width))
     for i in range(len(image_array)):
         out.write(image_array[i])
-    out.release()         
+    out.release()   
+
+def start_stream_process(stream_processor):
+    stream_processor.start_stream_processor()
 
 
-stream_thread = threading.Thread(target=stream_processor)
+stream_processor = StreamProcessor()
+stream_thread = threading.Thread(target=start_stream_process, args=(stream_processor,))
+
 
 @api.route('/birdDetect', methods=['GET'])
 def startCam():
-    global motion_event
-    motion_event = True
+    stream_processor.set_motion_event(True)
     print("WE GOT A REQUEST. MOTION STARTED<<<<<")
     if not stream_thread.is_alive():
         stream_thread.start()
     return json.dumps({"sucsess": True})
     
    
-    
-
 @api.route('/birdEnd', methods=['GET'])
 def endCam():
-    global motion_event
-    motion_event = False
     print("WE GOT A REQUEST. MOTION ENDED>>>>>")
-    global bird_detected
-    global image_arr
-    if bird_detected:
-        bird_video = deepcopy(image_arr)
-        write_video(bird_video)
-        bird_detected = False
-    image_arr = []
+    stream_processor.set_motion_event(False)
+    if stream_processor.get_bird_detected():
+        bird_video = deepcopy(stream_processor.get_image_arr())
+        save_thread = threading.Thread(target=write_video,args=(bird_video,))
+        save_thread.start()
+        stream_processor.set_bird_detected(False)
+    stream_processor.reset_img_arr()
     return json.dumps({"sucsess": True})
 
 
 if __name__ == '__main__':
-    
-  
     api.run(host= '0.0.0.0')
 
