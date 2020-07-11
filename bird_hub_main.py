@@ -23,7 +23,9 @@ model = None
 class StreamProcessor:
     def __init__(self):
         self.image_arr = []
+        self.MAX_TIMEOUT = 20
         self.classifier_imgs = []
+        self.reference_frame = []
         self.motion_event = False
         self.prev_motion_event = False
         self.bird_detected = True
@@ -88,28 +90,42 @@ class StreamProcessor:
         timeout = 0
         prev_motion_event = False
         bbox = (-1,-1,-1,-1)
-        print("here")
         try:
             cap = cv.VideoCapture("http://192.168.1.245:8080/stream/video.mjpeg")
             #cap = cv.VideoCapture(-1)
             ret,frame = cap.read()
             oldest_frame = []
             while True:
-                
                 self.bird_detected = True #Testing only, should use ML model
                 ret, frame = cap.read()
+
+                '''
+                Keep a fixed size queue of the most recent frames
+                '''
                 if self.before_queue.full():
                     oldest_frame = self.before_queue.get()
                     self.before_queue.put(frame)
 
                 else:
                     self.before_queue.put(frame)
-                if len(oldest_frame)>0:
+
+                '''
+                If there is a motion event, use static reference image 
+                from before the motion event to draw bounding box.
+                Otherwise, just use the oldest image in the queue
+                '''
+
+
+                if len(self.reference_frame) > 0:
+                    bbox = bb_draw(oldest_frame, frame)
+
+                elif len(oldest_frame)>0:
                     bbox = bb_draw(oldest_frame, frame)
                 
-                if not prev_motion_event and self.get_motion_event():
-                    self.set_image_arr(list(stream_processor.get_before_queue().queue))
-    
+                '''
+                If bb_draw can draw a bounding box something has entered the frame.
+                Draw a 150x150 square around it, crop it, give it to the ML Model.
+                '''
                 if bbox[0] != -1:
                     self.set_motion_event(True)
                     (left, top, right, bottom) = bbox
@@ -118,11 +134,28 @@ class StreamProcessor:
                     self.classifier_imgs.append(cropped_frame)
                     timeout = 0
 
-                else:
+                    '''
+                    If bb_draw is unable to draw a bounding box for MAX_TIMEOUT frames,
+                    the object has left the frame and motion event is over.
+                    '''
+                elif self.get_motion_event():
+                    print(timeout)
                     timeout += 1
-                    if timeout > 50:
+                    if timeout > self.MAX_TIMEOUT:
                         self.set_motion_event(False)
                         timeout = 0
+                        self.reference_frame = []
+        
+            
+                if not prev_motion_event and self.get_motion_event():
+                    self.set_image_arr(list(stream_processor.get_before_queue().queue))
+                    self.reference_frame = oldest_frame
+
+                if self.prev_motion_event and not self.get_motion_event():
+                    pass
+
+                if self.get_motion_event():
+                    self.image_arr.append(frame)
 
                 self.prev_motion_event = self.get_motion_event()
                     
@@ -130,8 +163,7 @@ class StreamProcessor:
 
                 cv.imshow('frame',frame)
 
-                if self.motion_event:
-                    self.image_arr.append(frame)
+              
 
                 if cv.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -169,7 +201,6 @@ def classifier():
         
         if stream_processor.get_classifier_imgs():
             image = stream_processor.get_latest_image()
-            print(image)
             #image = cv.resize(image, (150,150))
             image = np.expand_dims(image,axis=0)
             prediction = bird_classifier.classify_image(image)
@@ -208,8 +239,10 @@ def start_stream_process(stream_processor):
     stream_processor.start_stream_processor()
 
 def bb_draw(reference_img, new_img):
-
-
+    '''
+    Determines if a new_img contains an object that 
+    was not present in reference_img, returns a 150x150 bounding box around the object.
+    '''
     reference_img = cv.cvtColor(reference_img, cv.COLOR_BGR2GRAY)
     new_img =  cv.cvtColor(new_img, cv.COLOR_BGR2GRAY)
 
@@ -221,39 +254,30 @@ def bb_draw(reference_img, new_img):
     th_delta = cv.dilate(th_delta, None, iterations=0)
     (cnts, _) = cv.findContours(th_delta.copy(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
-
-
     largest_contour = cnts[0]
     for contour in cnts:
         if cv.contourArea(contour) > cv.contourArea(largest_contour):
             largest_contour = contour
 
     
-    if cv.contourArea(largest_contour) > 1500:
+    if cv.contourArea(largest_contour) > 4000:
         (x, y, w, h) = cv.boundingRect(largest_contour)
         birdcorner1 = [x,y]
         birdcorner2 = [x+w, y+h]
         birdCenter = [math.floor((birdcorner1[0]+birdcorner2[0])/2), math.ceil((birdcorner1[1]+birdcorner2[1])/2)]
-        left = int(birdCenter[0]-75)
-        right = int(birdCenter[0]+75)
-        top = int(birdCenter[1]-75)
-        bottom = int(birdCenter[1]+75)
+        left,right,top,bottom = birdCenter[0]-75,birdCenter[0]+75,birdCenter[1]-75,birdCenter[1]+75
         height, width = reference_img.shape
         if left < 0:
-            diff = -1 * left
-            right += diff
+            right -= left
             left = 0
         if top < 0:
-            diff = -1 * top
-            bottom += diff
+            bottom -= top
             top = 0
         if right > width:
-            diff = right - width
-            left -= diff
+            left -= (right - width)
             right = width
         if bottom > height:
-            diff = bottom - height
-            top -= diff
+            top -= (bottom - height)
             bottom = height
         return (left, top, right, bottom)
     else:
@@ -261,10 +285,7 @@ def bb_draw(reference_img, new_img):
 
 
 if __name__ == '__main__':
-
     write_video = False
-    motion_event_retriggered = False
-
     stream_processor = StreamProcessor()
     bird_classifier = BirdClassifier("/home/bloke/Documents/Birdshit/smart-bird-house/best_model_transfer.hdf5")
     stream_thread = threading.Thread(target=start_stream_process, args=(stream_processor,))
