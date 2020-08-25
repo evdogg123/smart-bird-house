@@ -145,7 +145,7 @@ def classifier():
         if stream_processor.get_image_arr():
             image = stream_processor.get_latest_image()
             bbox = bb_draw(stream_processor.get_reference_frame(), image)
-          
+            image_copy = image.copy()
             left, top, right, bottom = bbox
             if left != -1:
                 image = image[top:bottom, left:right].copy()
@@ -154,7 +154,10 @@ def classifier():
             prediction = bird_classifier.classify_image(image)
             print(prediction)
             predictions.append(prediction)
-            
+
+            cv.rectangle(image_copy, (left, top), (right, bottom), (255, 0, 0), 3)
+            cv.imshow('classifer frame',image_copy)
+
             if predictions[-1] < .15:
                 stream_processor.set_detectedString("BIRD")
             else:
